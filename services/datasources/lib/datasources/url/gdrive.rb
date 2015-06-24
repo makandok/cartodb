@@ -1,6 +1,7 @@
 # encoding: utf-8
 
 require 'google/api_client'
+require_relative '../../../../../lib/carto/http/client'
 
 module CartoDB
   module Datasources
@@ -80,8 +81,9 @@ module CartoDB
         # @return string | nil
         def get_auth_url(use_callback_flow=true)
           if use_callback_flow
+            service_name = service_name_for_user(DATASOURCE_NAME, @user)
             @client.authorization.state = CALLBACK_STATE_DATA_PLACEHOLDER.sub('user', @user.username)
-                                                                         .sub('service', DATASOURCE_NAME)
+                                                                         .sub('service', service_name)
           else
             @client.authorization.redirect_uri = REDIRECT_URI
           end
@@ -126,7 +128,9 @@ module CartoDB
           @refresh_token = token
           @client.authorization.update_token!( { refresh_token: @refresh_token } )
           @client.authorization.fetch_access_token!
-        rescue Google::APIClient::InvalidIDTokenError, Signet::AuthorizationError, Google::APIClient::ClientError, \
+        rescue Signet::AuthorizationError, Google::APIClient::InvalidIDTokenError => ex
+          raise TokenExpiredOrInvalidError.new("Invalid token: #{ex.message}", DATASOURCE_NAME)
+        rescue Google::APIClient::ClientError, \
                Google::APIClient::ServerError, Google::APIClient::BatchError, Google::APIClient::TransmissionError => ex
           raise AuthError.new("setting token: #{ex.message}", DATASOURCE_NAME)
         end
@@ -222,6 +226,9 @@ module CartoDB
         rescue Google::APIClient::BatchError, Google::APIClient::TransmissionError, Google::APIClient::ClientError, \
                Google::APIClient::ServerError
           raise DataDownloadError.new("get_resource_metadata() #{id}", DATASOURCE_NAME)
+        rescue => e
+          CartoDB.notify_exception(e, { id: id, user: @user })
+          raise e
         end
 
         # Retrieves current filters
@@ -277,7 +284,8 @@ module CartoDB
 
         # Revokes current set token
         def revoke_token
-          response = Typhoeus.get("https://accounts.google.com/o/oauth2/revoke?token=#{token}")
+          http_client = Carto::Http::Client.get('gdrive')
+          response = http_client.get("https://accounts.google.com/o/oauth2/revoke?token=#{token}")
             if response.code == 200
               true
             end

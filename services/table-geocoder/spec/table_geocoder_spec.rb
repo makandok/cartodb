@@ -2,6 +2,7 @@
 require_relative '../lib/table_geocoder.rb'
 require_relative '../../geocoder/lib/geocoder.rb'
 require_relative 'factories/pg_connection'
+require 'set'
 
 RSpec.configure do |config|
   config.mock_with :mocha
@@ -25,6 +26,8 @@ describe CartoDB::TableGeocoder do
     before do
       @tg = CartoDB::TableGeocoder.new(default_params.merge({
         table_name: @table_name,
+        qualified_table_name: @table_name,
+        sequel_qualified_table_name: @table_name,
         formatter:  "name, ', ', iso3",
         connection: @db
       }))
@@ -35,7 +38,9 @@ describe CartoDB::TableGeocoder do
     end
 
     it "generates a csv file for uploading" do
-      File.open("#{@tg.working_dir}/wadus.csv").read.should == File.read(path_to('nokia_input.csv'))
+      expected = Set.new(File.readlines(path_to('nokia_input.csv')))
+      actual = Set.new(File.readlines("#{@tg.working_dir}/wadus.csv"))
+      actual.should == expected
     end
 
     it "assigns a remote_id" do
@@ -47,6 +52,8 @@ describe CartoDB::TableGeocoder do
     before do
       @tg = CartoDB::TableGeocoder.new(default_params.merge({
         table_name: @table_name,
+        qualified_table_name: @table_name,
+        sequel_qualified_table_name: @table_name,
         formatter:  "name, ', ', iso3",
         connection: @db
       }))
@@ -54,14 +61,20 @@ describe CartoDB::TableGeocoder do
     end
 
     it "generates a csv file with the correct format" do
+      @tg.mark_rows_to_geocode
       @tg.generate_csv
-      File.read("#{@tg.working_dir}/wadus.csv").should == File.read(path_to('nokia_input.csv'))
+      File.readlines("#{@tg.working_dir}/wadus.csv").to_set.should == File.readlines(path_to('nokia_input.csv')).to_set
     end
 
     it "honors max_rows" do
-      @tg.stubs(:max_rows).returns 10
+      max_rows = 10
+      @tg.stubs(:max_rows).returns max_rows
+      @tg.mark_rows_to_geocode
       @tg.generate_csv
-      `wc -l #{@tg.working_dir}/wadus.csv `.split.first.to_i.should eq 11
+
+      # Note there might be duplicate input strings but we send unique inputs to the geocoder api.
+      # Also note the csv file has a header.
+      File.readlines("#{@tg.working_dir}/wadus.csv").count.should <= (max_rows+1)
     end
   end
 
@@ -142,8 +155,14 @@ describe CartoDB::TableGeocoder do
 
   describe '#add_georef_status_column' do
     before do
-      @db.run("create table wwwwww (id integer)")
-      @tg = CartoDB::TableGeocoder.new(table_name: 'wwwwww', connection: @db, remote_id: 'wadus')
+      table_name = 'wwwwww'
+      @db.run("create table #{table_name} (id integer)")
+      @tg = CartoDB::TableGeocoder.new(
+                                       table_name: 'wwwwww',
+                                       qualified_table_name: table_name,
+                                       sequel_qualified_table_name: table_name,
+                                       connection: @db,
+                                       remote_id: 'wadus')
     end
 
     after do
@@ -164,18 +183,21 @@ describe CartoDB::TableGeocoder do
     it 'casts cartodb_georef_status to boolean if needed' do
       @db.run('alter table wwwwww add column cartodb_georef_status text')
       @tg.add_georef_status_column
-      @db.fetch("select data_type from information_schema.columns where table_name = 'wwwwww'")
+      @db.fetch("select data_type from information_schema.columns where table_name = 'wwwwww' and column_name = 'cartodb_georef_status'")
         .first[:data_type].should eq 'boolean'
     end
   end
 
   it "Geocodes a table using the batch geocoder API" do
     config = YAML.load_file("#{File.dirname(__FILE__)}/../../../config/app_config.yml")["test"]["geocoder"]
-    pending "No Geocoder config found for test environment" unless config
+    pending "This is a System E2E test that can be useful for development but not suitable for CI"
+    pending "No Geocoder config found for test environment" unless config['app_id'] != ''
     config = config.inject({}){|memo,(k,v)| memo[k.to_sym] = v; memo}
     config[:cache] = config[:cache].inject({}){|memo,(k,v)| memo[k.to_sym] = v; memo}
     t = CartoDB::TableGeocoder.new(config.merge(
       table_name: @table_name,
+      qualified_table_name: @table_name,
+      sequel_qualified_table_name: @table_name,
       formatter:  "name, ', ', iso3",
       connection: @db,
       schema:     'public'
@@ -193,7 +215,7 @@ describe CartoDB::TableGeocoder do
     t.geocoder.status.should eq 'completed'
     t.geocoder.processed_rows.to_i.should eq 0
     t.cache.hits.should eq 10
-    @db.fetch("select count(*) from #{@table_name} where the_geom is null").first[:count].should eq 2
+    @db.fetch("select count(*) from #{@table_name} where the_geom is null").first[:count].should eq 0
     @db.fetch("select count(*) from #{@table_name} where cartodb_georef_status is false").first[:count].should eq 0
   end
 

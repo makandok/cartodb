@@ -4,29 +4,6 @@ require_relative '../visualization/stats'
 class Carto::Visualization < ActiveRecord::Base
   include CacheHelper
 
-  # INFO: disable ActiveRecord inheritance column
-  self.inheritance_column = :_type
-
-  belongs_to :user, inverse_of: :visualizations, select: Carto::User::DEFAULT_SELECT
-  belongs_to :full_user, class_name: Carto::User, foreign_key: :user_id, primary_key: :id, inverse_of: :visualizations, readonly: true
-
-  belongs_to :user_table, primary_key: :map_id, foreign_key: :map_id, inverse_of: :visualization
-
-  belongs_to :permission
-
-  has_many :likes, foreign_key: :subject
-  has_many :shared_entities, foreign_key: :entity_id, inverse_of: :visualization
-
-  belongs_to :table, class_name: UserTable, primary_key: :map_id, foreign_key: :map_id
-  has_one :external_source
-  has_many :unordered_children, class_name: Carto::Visualization, foreign_key: :parent_id
-
-  has_many :overlays
-
-  belongs_to :parent, class_name: Carto::Visualization, primary_key: :parent_id
-
-  belongs_to :map
-
   AUTH_DIGEST = '1211b3e77138f6e1724721f1ab740c9c70e66ba6fec5e989bb6640c4541ed15d06dbd5fdcbd3052b'
 
   TYPE_CANONICAL = 'table'
@@ -42,13 +19,50 @@ class Carto::Visualization < ActiveRecord::Base
   PRIVACY_LINK = 'link'
   PRIVACY_PROTECTED = 'password'
 
+  # INFO: disable ActiveRecord inheritance column
+  self.inheritance_column = :_type
+
+  belongs_to :user, inverse_of: :visualizations, select: Carto::User::DEFAULT_SELECT
+  belongs_to :full_user, class_name: Carto::User, foreign_key: :user_id, primary_key: :id, inverse_of: :visualizations, readonly: true
+
+  belongs_to :user_table, class_name: Carto::UserTable, primary_key: :map_id, foreign_key: :map_id, inverse_of: :visualization
+
+  belongs_to :permission
+
+  has_many :likes, foreign_key: :subject
+  has_many :shared_entities, foreign_key: :entity_id, inverse_of: :visualization
+
+  # TODO: duplicated with user_table?
+  belongs_to :table, class_name: Carto::UserTable, primary_key: :map_id, foreign_key: :map_id
+  has_one :external_source
+  has_many :unordered_children, class_name: Carto::Visualization, foreign_key: :parent_id
+
+  has_many :overlays
+
+  belongs_to :parent, class_name: Carto::Visualization, primary_key: :parent_id
+
+  belongs_to :map
+
   def size
-    table.size
+    # Only canonical visualizations (Datasets) have a related table and then count against disk quota,
+    # but we want to not break and even allow ordering by size multiple types
+    if table
+      table.size
+    elsif type == TYPE_REMOTE && !external_source.nil?
+      external_source.size
+    else
+      0
+    end
   end
 
   def tags
     tags = super
     tags == nil ? [] : tags
+  end
+
+  def tags=(tags)
+    tags.reject!(&:blank?) if tags
+    super(tags)
   end
 
   def related_tables
@@ -73,14 +87,14 @@ class Carto::Visualization < ActiveRecord::Base
 
   def children
     ordered = []
-    children = self.unordered_children
-    if children.count > 0
-      ordered << children.select { |vis| vis.prev_id.nil? }.first
-      children.delete_if { |vis| vis.prev_id.nil? }
-      while children.count > 0 && !ordered.last.next_id.nil?
+    children_vis = self.unordered_children
+    if children_vis.count > 0
+      ordered << children_vis.select { |vis| vis.prev_id.nil? }.first
+      while !ordered.last.next_id.nil?
         target = ordered.last.next_id
-        ordered << children.select { |vis| vis.id == target }.first
-        children.delete_if { |vis| vis.id == target }
+        unless target.nil?
+          ordered << children_vis.select { |vis| vis.id == target }.first
+        end
       end
     end
     ordered
@@ -103,6 +117,10 @@ class Carto::Visualization < ActiveRecord::Base
     is_public? || is_link_privacy?
   end
 
+  def is_writable_by_user(user)
+    user_id == user.id || has_write_permission?(user)
+  end
+
   def varnish_key
     "#{user.database_name}:#{sorted_related_table_names},#{id}"
   end
@@ -119,6 +137,7 @@ class Carto::Visualization < ActiveRecord::Base
     end
   end
 
+  # Despite storing always a named map, no need to retrieve it for "public" visualizations
   def retrieve_named_map?
     password_protected? || has_private_tables?
   end
@@ -198,6 +217,10 @@ class Carto::Visualization < ActiveRecord::Base
   def mapviews
     @mapviews ||= CartoDB::Visualization::Stats.mapviews(stats)
   end
+  
+  def total_mapviews(user=nil)
+    @total_mapviews ||= CartoDB::Visualization::Stats.new(self, user).total_mapviews
+  end
 
   def geometry_types
     @geometry_types ||= user_table.geometry_types if user_table
@@ -209,11 +232,10 @@ class Carto::Visualization < ActiveRecord::Base
 
   private
 
-  # INFO: refactor from Visualization::Member.has_named_map?
   def get_named_map
-    # TODO: WIP
     return nil if type == TYPE_REMOTE
-    named_maps.get(CartoDB::NamedMapsWrapper::NamedMap.normalize_name(id))
+    data = named_maps.get(CartoDB::NamedMapsWrapper::NamedMap.normalize_name(id))
+    data.nil? ? false : data
   end
 
   def named_maps(force_init = false)
@@ -266,7 +288,7 @@ class Carto::Visualization < ActiveRecord::Base
 
   def get_related_tables
     return [] unless map
-    map.carto_and_torque_layers.flat_map { |layer| layer.affected_tables.map { |t| t.service } }.uniq
+    map.carto_and_torque_layers.flat_map { |layer| layer.affected_tables}.uniq
   end
 
   def get_related_visualizations
@@ -275,6 +297,10 @@ class Carto::Visualization < ActiveRecord::Base
 
   def has_read_permission?(user)
     user && (is_owner_user?(user) || (permission && permission.user_has_read_permission?(user)))
+  end
+
+  def has_write_permission?(user)
+    user && (is_owner_user?(user) || (permission && permission.user_has_write_permission?(user)))
   end
 
   def is_owner_user?(user)

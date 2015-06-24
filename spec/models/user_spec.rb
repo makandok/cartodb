@@ -1,8 +1,21 @@
 # coding: UTF-8
 require_relative '../spec_helper'
+require_relative 'user_shared_examples'
+
+describe 'refactored behaviour' do
+
+  it_behaves_like 'user models' do
+    def get_twitter_imports_count_by_user_id(user_id)
+      User.where(id: user_id).first.get_twitter_imports_count
+    end
+  end
+
+end
 
 describe User do
   before(:all) do
+    CartoDB::NamedMapsWrapper::NamedMaps.any_instance.stubs(:get => nil, :create => true, :update => true)
+    
     @user_password = 'admin123'
     puts "\n[rspec][user_spec] Creating test user databases..."
     @user     = create_user :email => 'admin@example.com', :username => 'admin', :password => @user_password
@@ -15,7 +28,7 @@ describe User do
   end
 
   before(:each) do
-    CartoDB::NamedMapsWrapper::NamedMaps.any_instance.stubs(:get).returns(nil)
+    CartoDB::NamedMapsWrapper::NamedMaps.any_instance.stubs(:get => nil, :create => true, :update => true)
     CartoDB::Varnish.any_instance.stubs(:send_command).returns(true)
     User.any_instance.stubs(:enable_remote_db_user).returns(true)
   end
@@ -949,7 +962,7 @@ describe User do
     @user.trial_ends_at.should_not be_nil
     @user.stubs(:upgraded_at).returns(nil)
     @user.trial_ends_at.should be_nil
-    @user.stubs(:upgraded_at).returns(Time.now - 15.days)
+    @user.stubs(:upgraded_at).returns(Time.now - (User::TRIAL_DURATION_DAYS - 1).days)
     @user.trial_ends_at.should_not be_nil
   end
 
@@ -1143,7 +1156,7 @@ describe User do
     it 'Checks that shared tables include not only owned ones' do
       require_relative '../../app/models/visualization/collection'
       CartoDB::Varnish.any_instance.stubs(:send_command).returns(true)
-      CartoDB::NamedMapsWrapper::NamedMaps.any_instance.stubs(:get).returns(nil)
+      CartoDB::NamedMapsWrapper::NamedMaps.any_instance.stubs(:get => nil, :create => true, :update => true)
       # No need to really touch the DB for the permissions
       Table::any_instance.stubs(:add_read_permission).returns(nil)
 
@@ -1446,12 +1459,15 @@ describe User do
       end
 
       collection = CartoDB::Visualization::Collection.new.fetch({user_id: @user.id})
-      redis_keys = collection.map {|v| v.redis_vizjson_key } + collection.map {|v| v.redis_vizjson_key(true) }
+      redis_mock = mock
+      redis_vizjson_cache = CartoDB::Visualization::RedisVizjsonCache.new()
+      CartoDB::Visualization::RedisVizjsonCache.any_instance.stubs(:redis).returns(redis_mock)
+
+
+      redis_keys = collection.map {|v| [redis_vizjson_cache.key(v.id, false), redis_vizjson_cache.key(v.id, true)] }.flatten
       redis_keys.should_not be_empty
 
-      redis_cache_mock = mock
-      redis_cache_mock.expects(:del).once.with(redis_keys)
-      CartoDB::Visualization::Member.expects(:redis_cache).once.returns(redis_cache_mock)
+      redis_mock.expects(:del).once.with(redis_keys)
 
       @user.purge_redis_vizjson_cache
     end

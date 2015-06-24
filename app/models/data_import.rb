@@ -11,6 +11,7 @@ require_relative './quota_checker'
 require_relative '../../lib/cartodb/errors'
 require_relative '../../lib/cartodb/import_error_codes'
 require_relative '../../lib/cartodb/metrics'
+require_relative '../../lib/cartodb/mixpanel'
 require_relative '../../lib/cartodb_stats'
 require_relative '../../config/initializers/redis'
 require_relative '../../services/importer/lib/importer'
@@ -172,7 +173,6 @@ class DataImport < Sequel::Model
       self.error_code = 1002
       self.state      = STATE_FAILURE
       save
-      return self
     end
 
     success ? handle_success : handle_failure
@@ -723,7 +723,8 @@ class DataImport < Sequel::Model
                   'file_stats'        => ::JSON.parse(self.stats),
                   'resque_ppid'       => self.resque_ppid,
                   'user_timeout'      => ::DataImport.http_timeout_for(current_user),
-                  'error_source'      => get_error_source
+                  'error_source'      => get_error_source,
+                  'id'                => self.id
                  }
     if !self.extra_options.nil?
       import_log['extra_options'] = self.extra_options
@@ -731,8 +732,9 @@ class DataImport < Sequel::Model
     import_log.merge!(decorate_log(self))
     dataimport_logger.info(import_log.to_json)
     CartoDB::Importer2::MailNotifier.new(self, results, ::Resque).notify_if_needed
-
     results.each { |result| CartoDB::Metrics.new.report(:import, payload_for(result)) }
+    # TODO: remove mixpanel
+    results.each { |result| CartoDB::Mixpanel.new.report(:import, payload_for(result)) }
   end
 
   def decorate_log(data_import)

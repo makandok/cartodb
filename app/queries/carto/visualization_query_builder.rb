@@ -3,7 +3,7 @@
 require 'active_record'
 
 require_relative '../../models/carto/shared_entity'
-require_relative '../../helpers/carto/uuidhelper'
+require_dependency 'carto/uuidhelper'
 
 # TODO: consider moving some of this to model scopes if convenient
 class Carto::VisualizationQueryBuilder
@@ -20,7 +20,7 @@ class Carto::VisualizationQueryBuilder
   end
 
   def self.user_public(user)
-    new.with_user_id(user.id).with_privacy(Carto::Visualization::PRIVACY_PUBLIC)
+    new.with_user_id(user ? user.id : nil).with_privacy(Carto::Visualization::PRIVACY_PUBLIC)
   end
 
   PARTIAL_MATCH_QUERY = %Q{
@@ -64,6 +64,11 @@ class Carto::VisualizationQueryBuilder
 
   def with_user_id(user_id)
     @user_id = user_id
+    self
+  end
+
+  def with_user_id_not(user_id)
+    @user_id_not = user_id
     self
   end
 
@@ -159,6 +164,10 @@ class Carto::VisualizationQueryBuilder
 
     if @user_id
       query = query.where(user_id: @user_id)
+    end
+
+    if @user_id_not
+      query = query.where('visualizations.user_id != ?', @user_id_not)
     end
 
     if @privacy

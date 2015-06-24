@@ -3,22 +3,14 @@ require 'json'
 require_relative '../../../models/overlay/collection'
 require_relative '../../../models/overlay/presenter'
 require_relative '../../../models/visualization/member'
+require_relative '../../../models/visualization/locator'
 
 class Api::Json::OverlaysController < Api::ApplicationController
   include CartoDB
 
-  ssl_required :index, :show, :create, :update, :destroy
-  before_filter :check_owner_by_vis, only: [ :index, :create ]
-  before_filter :check_owner_by_id, only: [ :show, :update, :destroy ]
-
-  def index
-    collection = Overlay::Collection.new(
-      visualization_id: params.fetch('visualization_id'),
-    ).fetch
-    render_jsonp(collection)
-  rescue KeyError
-    head :not_found
-  end
+  ssl_required :create, :update, :destroy
+  before_filter :check_owner_by_vis, only: [ :create ]
+  before_filter :check_owner_by_id, only: [ :update, :destroy ]
 
   def create
     member_attributes = payload.merge(
@@ -30,13 +22,6 @@ class Api::Json::OverlaysController < Api::ApplicationController
 
     member= Overlay::Member.new(member_attributes).store
     render_jsonp(member.attributes)
-  end
-
-  def show
-    member = Overlay::Member.new(id: params.fetch('id')).fetch
-    render_jsonp(member.attributes)
-  rescue KeyError
-    head :not_found
   end
 
   def update
@@ -73,11 +58,28 @@ class Api::Json::OverlaysController < Api::ApplicationController
 
   def check_owner_by_vis
     head 401 and return if current_user.nil?
+    vis_id = params.fetch('visualization_id')
+    vis_id, schema = table_and_schema_from(vis_id)
 
-    vis = Visualization::Member.new(id: params.fetch('visualization_id')).fetch
+    vis,  = locator.get(vis_id, CartoDB.extract_subdomain(request))
     head 401 and return if vis.nil?
 
     head 403 and return if vis.user_id != current_user.id && !vis.has_permission?(current_user, CartoDB::Visualization::Member::PERMISSION_READWRITE)
   end
+
+  private
+
+  def table_and_schema_from(param)
+    if param =~ /\./
+      @table_id, @schema = param.split('.').reverse
+    else
+      @table_id, @schema = [param, nil]
+    end
+  end
+
+  def locator
+    CartoDB::Visualization::Locator.new
+  end
+
 end
 

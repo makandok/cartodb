@@ -1,8 +1,6 @@
 class Api::Json::PermissionsController < Api::ApplicationController
 
-  if Rails.env.production? || Rails.env.staging?
-    ssl_required :show, :update
-  end
+  ssl_required :update if Rails.env.production? || Rails.env.staging?
 
   def update
     permission = CartoDB::Permission.where(id: params[:id]).first
@@ -18,15 +16,6 @@ class Api::Json::PermissionsController < Api::ApplicationController
     end
 
     permission.save
-
-    render json: permission.to_poro
-  end
-
-  def show
-    permission = CartoDB::Permission.where(id: params[:id]).first
-
-    return head(404) if permission.nil?
-    return head(401) unless permission.is_owner?(current_user)
 
     render json: permission.to_poro
   end

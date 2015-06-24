@@ -1,4 +1,5 @@
 require 'active_record'
+require_relative './user'
 
 class Carto::Permission < ActiveRecord::Base
   DEFAULT_ACL_VALUE = []
@@ -11,7 +12,7 @@ class Carto::Permission < ActiveRecord::Base
   TYPE_USER         = 'user'
   TYPE_ORGANIZATION = 'org'
 
-  belongs_to :owner, class_name: User, select: Carto::User::DEFAULT_SELECT
+  belongs_to :owner, class_name: User, select: Carto::User::SELECT_WITH_DATABASE
 
   def acl
     @acl ||= self.access_control_list.nil? ? DEFAULT_ACL_VALUE : JSON.parse(self.access_control_list, symbolize_names: true)
@@ -21,7 +22,11 @@ class Carto::Permission < ActiveRecord::Base
     is_owner_user?(user) || !acl_entries_for_user(user).empty?
   end
 
-  # INFO: discouraged, since it forces using internal constants
+  def user_has_write_permission?(user)
+    is_owner_user?(user) || is_permitted?(user, ACCESS_READWRITE)
+  end
+
+  # INFO: discouraged outside this class, since it forces using internal constants
   # Use explicit methods instead.
   # Needed for backwards compatibility
   def is_permitted?(user, permission_type)

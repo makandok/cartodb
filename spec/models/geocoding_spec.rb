@@ -1,19 +1,20 @@
 #encoding: UTF-8
 require 'spec_helper'
-require 'ruby-debug'
 
 describe Geocoding do
   before(:all) do
     @user  = create_user(geocoding_quota: 200, geocoding_block_price: 1500)
+    
+    CartoDB::NamedMapsWrapper::NamedMaps.any_instance.stubs(:get => nil, :create => true, :update => true)
     @table = FactoryGirl.create(:user_table, user_id: @user.id)
   end
 
   before(:each) do
-    CartoDB::NamedMapsWrapper::NamedMaps.any_instance.stubs(:get).returns(nil)
+    CartoDB::NamedMapsWrapper::NamedMaps.any_instance.stubs(:get => nil, :create => true, :update => true)
   end
 
   after(:all) do
-    CartoDB::Visualization::Member.any_instance.stubs(:has_named_map?).returns(false)
+    CartoDB::NamedMapsWrapper::NamedMaps.any_instance.stubs(:get => nil, :create => true, :update => true, :delete => true)
     @user.destroy
   end
 
@@ -166,6 +167,17 @@ describe Geocoding do
 
       geocoding.run!
       geocoding.reload.state.should eq 'failed'
+    end
+
+    it 'sends a track event through hubspot client' do
+      hubspot_instance = CartoDB::Hubspot.instance
+      hubspot_instance.expects(:track_geocoding_success).once.with() { |payload|
+        payload[:email] == @user.email && payload[:processed_rows] == 0
+      }
+
+      geocoding = FactoryGirl.build(:geocoding, user: @user, formatter: 'a', user_table: @table, formatter: 'b')
+      geocoding.class.stubs(:processable_rows).returns 0
+      geocoding.run!
     end
   end
 
